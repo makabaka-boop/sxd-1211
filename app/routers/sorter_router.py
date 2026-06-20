@@ -8,7 +8,7 @@ from app.auth import get_current_user
 from app.schemas import UserRole, ClothRecord, ClothRecordCreate, ClothRecordFilter
 from app.schemas import SortingRecordCreate, RewashRecordCreate, ClothStatus
 from app.services.laundry_service import (
-    create_cloth_record, sort_cloth_record, request_rewash,
+    create_cloth_record, sort_cloth_record, request_rewash, complete_washing,
     get_cloth_record, list_cloth_records
 )
 
@@ -68,6 +68,12 @@ class SorterController(Controller):
     async def sort_record(self, current_user: dict, record_id: int, data: SortingRecordCreate) -> dict:
         check_role(current_user, [UserRole.ADMIN, UserRole.SORTER])
         record = sort_cloth_record(record_id, data, current_user["id"])
+        return record
+
+    @post("/cloth-records/{record_id:int}/complete-washing", summary="完成清洗，流转至待质检")
+    async def complete_washing_record(self, current_user: dict, record_id: int) -> dict:
+        check_role(current_user, [UserRole.ADMIN, UserRole.SORTER])
+        record = complete_washing(record_id, current_user["id"])
         return record
 
     @post("/cloth-records/{record_id:int}/rewash", summary="申请补洗")

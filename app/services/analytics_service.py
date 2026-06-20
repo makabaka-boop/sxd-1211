@@ -27,14 +27,19 @@ def detect_damage_rate_abnormal() -> List[dict]:
         category_stats[cat_id]["total"] += record["quantity"]
         category_stats[cat_id]["category_name"] = categories.get(cat_id, "未知")
 
+        is_damaged = False
         if record.get("damage_description"):
-            category_stats[cat_id]["damaged"] += record["quantity"]
+            is_damaged = True
 
-        qc_list = qc_records_table.search(lambda q: q["cloth_record_id"] == record["id"])
-        for qc in qc_list:
-            if qc["damage_recheck"] in [DamageLevel.MINOR, DamageLevel.MODERATE, DamageLevel.SEVERE]:
-                category_stats[cat_id]["damaged"] += record["quantity"]
-                break
+        if not is_damaged:
+            qc_list = qc_records_table.search(lambda q: q["cloth_record_id"] == record["id"])
+            for qc in qc_list:
+                if qc["damage_recheck"] in [DamageLevel.MINOR, DamageLevel.MODERATE, DamageLevel.SEVERE]:
+                    is_damaged = True
+                    break
+
+        if is_damaged:
+            category_stats[cat_id]["damaged"] += record["quantity"]
 
     abnormal_categories = []
     for cat_id, stats in category_stats.items():
@@ -80,22 +85,21 @@ def detect_qc_timeout() -> List[dict]:
     timeout_hours = settings.QC_TIMEOUT_HOURS
     timeout_threshold = now() - timedelta(hours=timeout_hours)
 
-    pending_qc = list_cloth_records({"status": ClothStatus.WASHING.value})
-    pending_qc += list_cloth_records({"status": ClothStatus.REWASHING.value})
+    pending_qc = list_cloth_records({"status": ClothStatus.PENDING_QC.value})
 
     timeout_records = []
     for record in pending_qc:
-        sorted_at = record.get("sorted_at") or record.get("created_at")
-        if sorted_at:
+        reference_time = record.get("washing_completed_at") or record.get("sorted_at") or record.get("created_at")
+        if reference_time:
             try:
-                sorted_time = datetime.fromisoformat(sorted_at)
-                if sorted_time < timeout_threshold:
-                    hours_passed = (now() - sorted_time).total_seconds() / 3600
+                ref_datetime = datetime.fromisoformat(reference_time)
+                if ref_datetime < timeout_threshold:
+                    hours_passed = (now() - ref_datetime).total_seconds() / 3600
                     timeout_records.append({
                         "record_id": record["id"],
                         "batch_no": record["batch_no"],
                         "status": record["status"],
-                        "sorted_at": sorted_at,
+                        "washing_completed_at": reference_time,
                         "hours_passed": round(hours_passed, 1),
                         "timeout_hours": timeout_hours
                     })
@@ -190,14 +194,19 @@ def get_damage_high_risk_categories() -> List[dict]:
         category_stats[cat_id]["total"] += record["quantity"]
         category_stats[cat_id]["category_name"] = categories.get(cat_id, "未知")
 
+        is_damaged = False
         if record.get("damage_description"):
-            category_stats[cat_id]["damaged"] += 1
+            is_damaged = True
 
-        qc_list = qc_records_table.search(lambda q: q["cloth_record_id"] == record["id"])
-        for qc in qc_list:
-            if qc["damage_recheck"] != DamageLevel.NONE:
-                category_stats[cat_id]["damaged"] += 1
-                break
+        if not is_damaged:
+            qc_list = qc_records_table.search(lambda q: q["cloth_record_id"] == record["id"])
+            for qc in qc_list:
+                if qc["damage_recheck"] != DamageLevel.NONE:
+                    is_damaged = True
+                    break
+
+        if is_damaged:
+            category_stats[cat_id]["damaged"] += 1
 
     result = []
     for cat_id, stats in category_stats.items():

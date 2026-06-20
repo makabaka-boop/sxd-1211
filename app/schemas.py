@@ -182,23 +182,26 @@ class ClothRecord(BaseModel):
     damage_description: Optional[str] = None
     remark: Optional[str] = None
     sorter_id: Optional[int] = None
+    sorting_line: Optional[str] = None
+    washing_batch_no: Optional[str] = None
     washing_line_id: Optional[int] = None
     work_team_id: Optional[int] = None
     created_at: str
     updated_at: str
     sorted_at: Optional[str] = None
+    washing_completed_at: Optional[str] = None
     qc_at: Optional[str] = None
 
 
 class SortingRecordCreate(BaseModel):
-    cloth_record_id: int
     washing_line_id: int
     work_team_id: int
+    sorting_line: str
+    washing_batch_no: str
     sorter_remark: Optional[str] = None
 
 
 class QcRecordCreate(BaseModel):
-    cloth_record_id: int
     cleanliness: CleanlinessLevel
     damage_recheck: DamageLevel
     rewash_conclusion: Optional[bool] = False
@@ -219,7 +222,6 @@ class QcRecord(BaseModel):
 
 
 class RewashRecordCreate(BaseModel):
-    cloth_record_id: int
     reason: str
     rewash_count: Optional[int] = 1
 

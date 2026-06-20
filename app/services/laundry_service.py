@@ -16,6 +16,14 @@ def now_str() -> str:
     return datetime.now().isoformat()
 
 
+def get_cloth_record_or_404(record_id: int) -> dict:
+    record = cloth_records_table.get(doc_id=record_id)
+    if not record:
+        raise NotFoundException(detail=f"布草记录 {record_id} 不存在")
+    record["id"] = record_id
+    return record
+
+
 def validate_batch_unique(customer_id: int, batch_no: str, exclude_id: Optional[int] = None) -> None:
     query = (ClothRecordQuery.customer_id == customer_id) & (ClothRecordQuery.batch_no == batch_no)
     existing = cloth_records_table.search(query)
@@ -46,11 +54,14 @@ def create_cloth_record(data: ClothRecordCreate, sorter_id: int) -> dict:
         "damage_description": data.damage_description,
         "remark": data.remark,
         "sorter_id": None,
+        "sorting_line": None,
+        "washing_batch_no": None,
         "washing_line_id": None,
         "work_team_id": None,
         "created_at": now_str(),
         "updated_at": now_str(),
         "sorted_at": None,
+        "washing_completed_at": None,
         "qc_at": None
     }
 
@@ -60,12 +71,10 @@ def create_cloth_record(data: ClothRecordCreate, sorter_id: int) -> dict:
 
 
 def sort_cloth_record(record_id: int, data: SortingRecordCreate, sorter_id: int) -> dict:
-    record = cloth_records_table.get(doc_id=record_id)
-    if not record:
-        raise NotFoundException(detail="布草记录不存在")
+    record = get_cloth_record_or_404(record_id)
 
     if record["status"] not in [ClothStatus.PENDING_SORT, ClothStatus.REWASHING]:
-        raise ValidationException(detail=f"当前状态 {record['status']} 不可分拣")
+        raise ValidationException(detail=f"当前状态「{record['status']}」不可分拣，仅「待分拣」或「补洗中」可分拣")
 
     washing_line = washing_lines_table.get(doc_id=data.washing_line_id)
     if not washing_line:
@@ -75,28 +84,54 @@ def sort_cloth_record(record_id: int, data: SortingRecordCreate, sorter_id: int)
     if not work_team:
         raise NotFoundException(detail="责任班组不存在")
 
+    if not data.sorting_line or not data.sorting_line.strip():
+        raise ValidationException(detail="分拣线不能为空")
+    if not data.washing_batch_no or not data.washing_batch_no.strip():
+        raise ValidationException(detail="清洗批号不能为空")
+
     updates = {
         "status": ClothStatus.WASHING,
         "sorter_id": sorter_id,
+        "sorting_line": data.sorting_line,
+        "washing_batch_no": data.washing_batch_no,
         "washing_line_id": data.washing_line_id,
         "work_team_id": data.work_team_id,
         "sorted_at": now_str(),
+        "washing_completed_at": None,
         "updated_at": now_str()
     }
 
     cloth_records_table.update(updates, doc_ids=[record_id])
-    updated = cloth_records_table.get(doc_id=record_id)
-    updated["id"] = record_id
+    updated = get_cloth_record_or_404(record_id)
     return updated
 
 
-def request_rewash(record_id: int, reason: str, sorter_id: int) -> dict:
-    record = cloth_records_table.get(doc_id=record_id)
-    if not record:
-        raise NotFoundException(detail="布草记录不存在")
+def complete_washing(record_id: int, user_id: int) -> dict:
+    record = get_cloth_record_or_404(record_id)
 
-    if record["status"] not in [ClothStatus.PENDING_SORT, ClothStatus.WASHING, ClothStatus.PENDING_QC]:
-        raise ValidationException(detail=f"当前状态 {record['status']} 不可申请补洗")
+    if record["status"] not in [ClothStatus.WASHING, ClothStatus.REWASHING]:
+        raise ValidationException(
+            detail=f"当前状态「{record['status']}」不可完成清洗，仅「清洗中」或「补洗中」可完成清洗"
+        )
+
+    updates = {
+        "status": ClothStatus.PENDING_QC,
+        "washing_completed_at": now_str(),
+        "updated_at": now_str()
+    }
+    cloth_records_table.update(updates, doc_ids=[record_id])
+
+    updated = get_cloth_record_or_404(record_id)
+    return updated
+
+
+def request_rewash(record_id: int, reason: str, user_id: int) -> dict:
+    record = get_cloth_record_or_404(record_id)
+
+    if record["status"] not in [ClothStatus.PENDING_QC, ClothStatus.WASHING, ClothStatus.READY_FOR_DELIVERY]:
+        raise ValidationException(
+            detail=f"当前状态「{record['status']}」不可申请补洗，仅「待质检」「清洗中」「可出厂」可申请补洗"
+        )
 
     rewash_count = len(rewash_records_table.search(
         lambda r: r["cloth_record_id"] == record_id
@@ -116,18 +151,17 @@ def request_rewash(record_id: int, reason: str, sorter_id: int) -> dict:
     }
     cloth_records_table.update(updates, doc_ids=[record_id])
 
-    updated = cloth_records_table.get(doc_id=record_id)
-    updated["id"] = record_id
+    updated = get_cloth_record_or_404(record_id)
     return updated
 
 
 def create_qc_record(record_id: int, data: QcRecordCreate, inspector_id: int) -> dict:
-    record = cloth_records_table.get(doc_id=record_id)
-    if not record:
-        raise NotFoundException(detail="布草记录不存在")
+    record = get_cloth_record_or_404(record_id)
 
-    if record["status"] not in [ClothStatus.WASHING, ClothStatus.REWASHING]:
-        raise ValidationException(detail=f"当前状态 {record['status']} 不可质检")
+    if record["status"] != ClothStatus.PENDING_QC:
+        raise ValidationException(
+            detail=f"当前状态「{record['status']}」不可质检，仅「待质检」可质检，请先完成清洗"
+        )
 
     qc_data = {
         "cloth_record_id": record_id,
@@ -142,13 +176,14 @@ def create_qc_record(record_id: int, data: QcRecordCreate, inspector_id: int) ->
     qc_id = qc_records_table.insert(qc_data)
     qc_data["id"] = qc_id
 
-    new_status = record["status"]
     if data.delivery_suggestion == DeliverySuggestion.APPROVE:
         new_status = ClothStatus.READY_FOR_DELIVERY
     elif data.delivery_suggestion == DeliverySuggestion.REWASH:
         new_status = ClothStatus.REWASHING
     elif data.delivery_suggestion == DeliverySuggestion.HOLD:
         new_status = ClothStatus.HOLD_DELIVERY
+    else:
+        new_status = record["status"]
 
     updates = {
         "status": new_status,
@@ -161,12 +196,12 @@ def create_qc_record(record_id: int, data: QcRecordCreate, inspector_id: int) ->
 
 
 def confirm_delivery(record_id: int, user_id: int) -> dict:
-    record = cloth_records_table.get(doc_id=record_id)
-    if not record:
-        raise NotFoundException(detail="布草记录不存在")
+    record = get_cloth_record_or_404(record_id)
 
     if record["status"] != ClothStatus.READY_FOR_DELIVERY:
-        raise ValidationException(detail=f"当前状态 {record['status']} 不可出厂确认")
+        raise ValidationException(
+            detail=f"当前状态「{record['status']}」不可出厂确认，仅「可出厂」可确认出厂"
+        )
 
     updates = {
         "status": "已出厂",
@@ -174,8 +209,7 @@ def confirm_delivery(record_id: int, user_id: int) -> dict:
     }
     cloth_records_table.update(updates, doc_ids=[record_id])
 
-    updated = cloth_records_table.get(doc_id=record_id)
-    updated["id"] = record_id
+    updated = get_cloth_record_or_404(record_id)
     return updated
 
 

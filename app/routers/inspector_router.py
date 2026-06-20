@@ -50,9 +50,8 @@ class InspectorController(Controller):
     @get("/pending-qc", summary="获取待质检列表")
     async def list_pending_qc(self, current_user: dict) -> List[dict]:
         check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
-        records = list_cloth_records({"status": ClothStatus.WASHING.value})
-        records += list_cloth_records({"status": ClothStatus.REWASHING.value})
-        records.sort(key=lambda x: x["created_at"])
+        records = list_cloth_records({"status": ClothStatus.PENDING_QC.value})
+        records.sort(key=lambda x: x.get("washing_completed_at") or x["created_at"])
         return records
 
 
