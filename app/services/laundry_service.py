@@ -5,10 +5,16 @@ from litestar.exceptions import ValidationException, NotFoundException
 from app.database import (
     cloth_records_table, ClothRecordQuery,
     rewash_records_table, qc_records_table,
-    customers_table, cloth_categories_table, washing_lines_table, work_teams_table
+    customers_table, cloth_categories_table, washing_lines_table, work_teams_table,
+    rewash_tasks_table, rewash_recheck_records_table, RewashTaskQuery, RewashRecheckQuery,
+    RewashRecordQuery, users_table
 )
-from app.schemas import ClothStatus, ClothRecordCreate, SortingRecordCreate, QcRecordCreate
-from app.schemas import RewashRecordCreate, CleanlinessLevel, DeliverySuggestion, DamageLevel
+from app.schemas import (
+    ClothStatus, ClothRecordCreate, SortingRecordCreate, QcRecordCreate,
+    RewashRecordCreate, CleanlinessLevel, DeliverySuggestion, DamageLevel,
+    RewashTaskStatus, RewashFinalConclusion,
+    RewashTaskCreate, RewashTaskComplete, RewashTaskRecheck
+)
 from app.config import settings
 
 
@@ -248,4 +254,283 @@ def list_cloth_records(filters: Optional[dict] = None) -> List[dict]:
         result.append(item)
 
     result.sort(key=lambda x: x["created_at"], reverse=True)
+    return result
+
+
+def get_rewash_task_or_404(task_id: int) -> dict:
+    task = rewash_tasks_table.get(doc_id=task_id)
+    if not task:
+        raise NotFoundException(detail=f"补洗任务 {task_id} 不存在")
+    task["id"] = task_id
+    return task
+
+
+def create_rewash_task(record_id: int, data: RewashTaskCreate, creator_id: int) -> dict:
+    record = get_cloth_record_or_404(record_id)
+
+    if record["status"] not in [ClothStatus.PENDING_QC, ClothStatus.WASHING, ClothStatus.READY_FOR_DELIVERY, ClothStatus.REWASHING]:
+        raise ValidationException(
+            detail=f"当前状态「{record['status']}」不可创建补洗任务"
+        )
+
+    washing_line = washing_lines_table.get(doc_id=data.responsible_washing_line_id)
+    if not washing_line:
+        raise NotFoundException(detail="责任清洗线不存在")
+
+    work_team = work_teams_table.get(doc_id=data.responsible_work_team_id)
+    if not work_team:
+        raise NotFoundException(detail="责任班组不存在")
+
+    existing_rewash_count = len(rewash_tasks_table.search(
+        RewashTaskQuery.cloth_record_id == record_id
+    ))
+
+    task_data = {
+        "cloth_record_id": record_id,
+        "creator_id": creator_id,
+        "reason": data.reason,
+        "severity": data.severity,
+        "expected_completion_time": data.expected_completion_time,
+        "responsible_washing_line_id": data.responsible_washing_line_id,
+        "responsible_work_team_id": data.responsible_work_team_id,
+        "status": RewashTaskStatus.PENDING,
+        "rewash_count": existing_rewash_count + 1,
+        "remark": data.remark,
+        "created_at": now_str(),
+        "updated_at": now_str(),
+        "started_at": None,
+        "completed_at": None,
+        "rechecked_at": None,
+        "completer_id": None,
+        "completion_remark": None,
+        "rechecker_id": None,
+        "recheck_cleanliness": None,
+        "recheck_damage": None,
+        "final_conclusion": None,
+        "recheck_remark": None
+    }
+
+    task_id = rewash_tasks_table.insert(task_data)
+    task_data["id"] = task_id
+
+    rewash_records_table.insert({
+        "cloth_record_id": record_id,
+        "reason": data.reason,
+        "rewash_count": existing_rewash_count + 1,
+        "created_at": now_str()
+    })
+
+    cloth_records_table.update({
+        "status": ClothStatus.REWASHING,
+        "updated_at": now_str()
+    }, doc_ids=[record_id])
+
+    return task_data
+
+
+def list_rewash_tasks(filters: Optional[dict] = None) -> List[dict]:
+    tasks = rewash_tasks_table.all()
+
+    if filters:
+        if filters.get("cloth_record_id"):
+            tasks = [t for t in tasks if t["cloth_record_id"] == filters["cloth_record_id"]]
+        if filters.get("status"):
+            tasks = [t for t in tasks if t["status"] == filters["status"]]
+        if filters.get("responsible_washing_line_id"):
+            tasks = [t for t in tasks if t["responsible_washing_line_id"] == filters["responsible_washing_line_id"]]
+        if filters.get("responsible_work_team_id"):
+            tasks = [t for t in tasks if t["responsible_work_team_id"] == filters["responsible_work_team_id"]]
+        if filters.get("severity"):
+            tasks = [t for t in tasks if t["severity"] == filters["severity"]]
+
+    result = []
+    for t in tasks:
+        item = dict(t)
+        item["id"] = t.doc_id
+        result.append(item)
+
+    result.sort(key=lambda x: x["created_at"], reverse=True)
+    return result
+
+
+def start_rewash_task(task_id: int, user_id: int) -> dict:
+    task = get_rewash_task_or_404(task_id)
+
+    if task["status"] != RewashTaskStatus.PENDING:
+        raise ValidationException(
+            detail=f"当前补洗任务状态「{task['status']}」不可启动，仅「待补洗」可启动"
+        )
+
+    updates = {
+        "status": RewashTaskStatus.IN_PROGRESS,
+        "started_at": now_str(),
+        "updated_at": now_str()
+    }
+    rewash_tasks_table.update(updates, doc_ids=[task_id])
+
+    record = get_cloth_record_or_404(task["cloth_record_id"])
+    cloth_records_table.update({
+        "status": ClothStatus.REWASHING,
+        "updated_at": now_str()
+    }, doc_ids=[task["cloth_record_id"]])
+
+    return get_rewash_task_or_404(task_id)
+
+
+def complete_rewash_task(task_id: int, data: RewashTaskComplete, user_id: int) -> dict:
+    task = get_rewash_task_or_404(task_id)
+
+    if task["status"] not in [RewashTaskStatus.PENDING, RewashTaskStatus.IN_PROGRESS]:
+        raise ValidationException(
+            detail=f"当前补洗任务状态「{task['status']}」不可完成，仅「待补洗」或「补洗中」可完成"
+        )
+
+    updates = {
+        "status": RewashTaskStatus.COMPLETED,
+        "completed_at": now_str(),
+        "completer_id": user_id,
+        "completion_remark": data.completion_remark,
+        "updated_at": now_str()
+    }
+    rewash_tasks_table.update(updates, doc_ids=[task_id])
+
+    cloth_records_table.update({
+        "status": ClothStatus.PENDING_QC,
+        "updated_at": now_str()
+    }, doc_ids=[task["cloth_record_id"]])
+
+    return get_rewash_task_or_404(task_id)
+
+
+def recheck_rewash_task(task_id: int, data: RewashTaskRecheck, user_id: int) -> dict:
+    task = get_rewash_task_or_404(task_id)
+
+    if task["status"] != RewashTaskStatus.COMPLETED:
+        raise ValidationException(
+            detail=f"当前补洗任务状态「{task['status']}」不可复检，仅「补洗完成待复检」可复检"
+        )
+
+    recheck_data = {
+        "rewash_task_id": task_id,
+        "cloth_record_id": task["cloth_record_id"],
+        "rechecker_id": user_id,
+        "cleanliness": data.cleanliness,
+        "damage_recheck": data.damage_recheck,
+        "final_conclusion": data.final_conclusion,
+        "recheck_remark": data.recheck_remark,
+        "created_at": now_str()
+    }
+    recheck_id = rewash_recheck_records_table.insert(recheck_data)
+    recheck_data["id"] = recheck_id
+
+    if data.final_conclusion == RewashFinalConclusion.DELIVERY:
+        new_task_status = RewashTaskStatus.PASSED
+        new_cloth_status = ClothStatus.READY_FOR_DELIVERY
+    elif data.final_conclusion == RewashFinalConclusion.CONTINUE_REWASH:
+        new_task_status = RewashTaskStatus.FAILED
+        new_cloth_status = ClothStatus.REWASHING
+    elif data.final_conclusion == RewashFinalConclusion.HOLD:
+        new_task_status = RewashTaskStatus.PASSED
+        new_cloth_status = ClothStatus.HOLD_DELIVERY
+    else:
+        new_task_status = task["status"]
+        new_cloth_status = None
+
+    task_updates = {
+        "status": new_task_status,
+        "rechecked_at": now_str(),
+        "rechecker_id": user_id,
+        "recheck_cleanliness": data.cleanliness,
+        "recheck_damage": data.damage_recheck,
+        "final_conclusion": data.final_conclusion,
+        "recheck_remark": data.recheck_remark,
+        "updated_at": now_str()
+    }
+    rewash_tasks_table.update(task_updates, doc_ids=[task_id])
+
+    if new_cloth_status:
+        cloth_records_table.update({
+            "status": new_cloth_status,
+            "qc_at": now_str(),
+            "updated_at": now_str()
+        }, doc_ids=[task["cloth_record_id"]])
+
+    return recheck_data
+
+
+def get_cloth_record_detail(record_id: int) -> dict:
+    record = get_cloth_record_or_404(record_id)
+
+    rewash_tasks = rewash_tasks_table.search(RewashTaskQuery.cloth_record_id == record_id)
+    rewash_tasks_list = []
+    for t in rewash_tasks:
+        item = dict(t)
+        item["id"] = t.doc_id
+        washing_line = washing_lines_table.get(doc_id=t["responsible_washing_line_id"])
+        item["responsible_washing_line_name"] = washing_line["name"] if washing_line else None
+        work_team = work_teams_table.get(doc_id=t["responsible_work_team_id"])
+        item["responsible_work_team_name"] = work_team["name"] if work_team else None
+        creator = users_table.get(doc_id=t["creator_id"])
+        item["creator_name"] = creator["full_name"] if creator else None
+        if t.get("completer_id"):
+            completer = users_table.get(doc_id=t["completer_id"])
+            item["completer_name"] = completer["full_name"] if completer else None
+        if t.get("rechecker_id"):
+            rechecker = users_table.get(doc_id=t["rechecker_id"])
+            item["rechecker_name"] = rechecker["full_name"] if rechecker else None
+        rewash_tasks_list.append(item)
+
+    rewash_history = rewash_records_table.search(RewashRecordQuery.cloth_record_id == record_id)
+    rewash_history_list = []
+    for r in rewash_history:
+        item = dict(r)
+        item["id"] = r.doc_id
+        rewash_history_list.append(item)
+
+    recheck_history = rewash_recheck_records_table.search(RewashRecheckQuery.cloth_record_id == record_id)
+    recheck_history_list = []
+    for r in recheck_history:
+        item = dict(r)
+        item["id"] = r.doc_id
+        rechecker = users_table.get(doc_id=r["rechecker_id"])
+        item["rechecker_name"] = rechecker["full_name"] if rechecker else None
+        recheck_history_list.append(item)
+
+    active_tasks = [t for t in rewash_tasks_list if t["status"] in [
+        RewashTaskStatus.PENDING, RewashTaskStatus.IN_PROGRESS, RewashTaskStatus.COMPLETED
+    ]]
+    current_rewash_status = active_tasks[0]["status"] if active_tasks else None
+
+    detail = dict(record)
+    detail["rewash_tasks"] = rewash_tasks_list
+    detail["rewash_history"] = rewash_history_list
+    detail["recheck_history"] = recheck_history_list
+    detail["current_rewash_status"] = current_rewash_status
+    detail["total_rewash_count"] = len(rewash_tasks_list)
+
+    return detail
+
+
+def list_pending_rewash_tasks() -> List[dict]:
+    pending_statuses = [RewashTaskStatus.PENDING, RewashTaskStatus.IN_PROGRESS, RewashTaskStatus.COMPLETED]
+    all_tasks = list_rewash_tasks()
+    result = []
+    for task in all_tasks:
+        if task["status"] in pending_statuses:
+            record = cloth_records_table.get(doc_id=task["cloth_record_id"])
+            if record:
+                task["batch_no"] = record["batch_no"]
+                task["customer_id"] = record["customer_id"]
+                task["category_id"] = record["category_id"]
+                task["quantity"] = record["quantity"]
+                customer = customers_table.get(doc_id=record["customer_id"])
+                task["customer_name"] = customer["name"] if customer else None
+                category = cloth_categories_table.get(doc_id=record["category_id"])
+                task["category_name"] = category["name"] if category else None
+            washing_line = washing_lines_table.get(doc_id=task["responsible_washing_line_id"])
+            task["responsible_washing_line_name"] = washing_line["name"] if washing_line else None
+            work_team = work_teams_table.get(doc_id=task["responsible_work_team_id"])
+            task["responsible_work_team_name"] = work_team["name"] if work_team else None
+            result.append(task)
+    result.sort(key=lambda x: x["expected_completion_time"])
     return result

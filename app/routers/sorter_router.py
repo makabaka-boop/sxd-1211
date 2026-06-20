@@ -5,11 +5,16 @@ from litestar.di import Provide
 from typing import List, Optional
 
 from app.auth import get_current_user
-from app.schemas import UserRole, ClothRecord, ClothRecordCreate, ClothRecordFilter
-from app.schemas import SortingRecordCreate, RewashRecordCreate, ClothStatus
+from app.schemas import (
+    UserRole, ClothRecord, ClothRecordCreate, ClothRecordFilter,
+    SortingRecordCreate, RewashRecordCreate, ClothStatus,
+    RewashTaskComplete, RewashTaskStatus
+)
 from app.services.laundry_service import (
     create_cloth_record, sort_cloth_record, request_rewash, complete_washing,
-    get_cloth_record, list_cloth_records
+    get_cloth_record, list_cloth_records,
+    list_pending_rewash_tasks, list_rewash_tasks, get_rewash_task_or_404,
+    start_rewash_task, complete_rewash_task, get_cloth_record_detail
 )
 
 
@@ -81,6 +86,57 @@ class SorterController(Controller):
         check_role(current_user, [UserRole.ADMIN, UserRole.SORTER])
         record = request_rewash(record_id, data.reason, current_user["id"])
         return record
+
+    @get("/rewash-tasks/pending", summary="获取待补洗任务列表")
+    async def list_pending_rewash(self, current_user: dict) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.SORTER])
+        tasks = list_pending_rewash_tasks()
+        return tasks
+
+    @get("/rewash-tasks", summary="获取补洗任务列表")
+    async def list_rewash(
+        self,
+        current_user: dict,
+        cloth_record_id: Optional[int] = None,
+        status: Optional[RewashTaskStatus] = None,
+        responsible_washing_line_id: Optional[int] = None,
+        responsible_work_team_id: Optional[int] = None,
+        severity: Optional[str] = None
+    ) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.SORTER])
+        filters = {
+            "cloth_record_id": cloth_record_id,
+            "status": status.value if status else None,
+            "responsible_washing_line_id": responsible_washing_line_id,
+            "responsible_work_team_id": responsible_work_team_id,
+            "severity": severity
+        }
+        tasks = list_rewash_tasks(filters)
+        return tasks
+
+    @get("/rewash-tasks/{task_id:int}", summary="获取补洗任务详情")
+    async def get_rewash(self, current_user: dict, task_id: int) -> dict:
+        check_role(current_user, [UserRole.ADMIN, UserRole.SORTER])
+        task = get_rewash_task_or_404(task_id)
+        return task
+
+    @post("/rewash-tasks/{task_id:int}/start", summary="启动补洗任务")
+    async def start_rewash(self, current_user: dict, task_id: int) -> dict:
+        check_role(current_user, [UserRole.ADMIN, UserRole.SORTER])
+        task = start_rewash_task(task_id, current_user["id"])
+        return task
+
+    @post("/rewash-tasks/{task_id:int}/complete", summary="完成补洗任务")
+    async def complete_rewash(self, current_user: dict, task_id: int, data: RewashTaskComplete) -> dict:
+        check_role(current_user, [UserRole.ADMIN, UserRole.SORTER])
+        task = complete_rewash_task(task_id, data, current_user["id"])
+        return task
+
+    @get("/cloth-records/{record_id:int}/detail", summary="获取布草记录详情（含补洗历史）")
+    async def get_record_detail(self, current_user: dict, record_id: int) -> dict:
+        check_role(current_user, [UserRole.ADMIN, UserRole.SORTER, UserRole.INSPECTOR])
+        detail = get_cloth_record_detail(record_id)
+        return detail
 
 
 sorter_router_controllers = [SorterController]

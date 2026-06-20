@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from enum import Enum
 
@@ -17,6 +17,28 @@ class ClothStatus(str, Enum):
     REWASHING = "补洗中"
     READY_FOR_DELIVERY = "可出厂"
     HOLD_DELIVERY = "暂停出厂"
+
+
+class RewashTaskStatus(str, Enum):
+    PENDING = "待补洗"
+    IN_PROGRESS = "补洗中"
+    COMPLETED = "补洗完成待复检"
+    PASSED = "复检通过"
+    FAILED = "复检未通过"
+    CANCELLED = "已取消"
+
+
+class RewashSeverity(str, Enum):
+    LOW = "低"
+    MEDIUM = "中"
+    HIGH = "高"
+    CRITICAL = "严重"
+
+
+class RewashFinalConclusion(str, Enum):
+    DELIVERY = "最终出厂"
+    CONTINUE_REWASH = "继续补洗"
+    HOLD = "暂停出厂"
 
 
 class StainLevel(str, Enum):
@@ -243,3 +265,57 @@ class ClothRecordFilter(BaseModel):
     stain_level: Optional[StainLevel] = None
     date_from: Optional[str] = None
     date_to: Optional[str] = None
+
+
+class RewashTaskCreate(BaseModel):
+    reason: str
+    severity: RewashSeverity
+    expected_completion_time: str
+    responsible_washing_line_id: int
+    responsible_work_team_id: int
+    remark: Optional[str] = None
+
+
+class RewashTaskComplete(BaseModel):
+    completion_remark: Optional[str] = None
+
+
+class RewashTaskRecheck(BaseModel):
+    cleanliness: CleanlinessLevel
+    damage_recheck: DamageLevel
+    final_conclusion: RewashFinalConclusion
+    recheck_remark: Optional[str] = None
+
+
+class RewashTask(BaseModel):
+    id: int
+    cloth_record_id: int
+    creator_id: int
+    reason: str
+    severity: RewashSeverity
+    expected_completion_time: str
+    responsible_washing_line_id: int
+    responsible_work_team_id: int
+    status: RewashTaskStatus
+    rewash_count: int
+    remark: Optional[str] = None
+    created_at: str
+    updated_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    rechecked_at: Optional[str] = None
+    completer_id: Optional[int] = None
+    completion_remark: Optional[str] = None
+    rechecker_id: Optional[int] = None
+    recheck_cleanliness: Optional[CleanlinessLevel] = None
+    recheck_damage: Optional[DamageLevel] = None
+    final_conclusion: Optional[RewashFinalConclusion] = None
+    recheck_remark: Optional[str] = None
+
+
+class ClothRecordDetail(ClothRecord):
+    rewash_tasks: List[dict] = []
+    rewash_history: List[dict] = []
+    recheck_history: List[dict] = []
+    current_rewash_status: Optional[str] = None
+    total_rewash_count: int = 0

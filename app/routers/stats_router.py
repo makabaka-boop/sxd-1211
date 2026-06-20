@@ -16,7 +16,13 @@ from app.services.analytics_service import (
     detect_rewash_backlog,
     detect_qc_timeout,
     detect_washing_line_problems,
-    detect_missing_delivery_conclusion
+    detect_missing_delivery_conclusion,
+    get_rewash_stats_by_customer,
+    get_rewash_stats_by_category,
+    get_rewash_stats_by_washing_line,
+    get_rewash_stats_by_work_team,
+    get_abnormal_rewash_ranking,
+    get_rewash_overview_stats
 )
 
 
@@ -49,6 +55,42 @@ class StatsController(Controller):
     async def washing_line_pass_rates(self, current_user: dict) -> List[dict]:
         check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
         return get_washing_line_pass_rates()
+
+
+class RewashStatsController(Controller):
+    path = "/stats/rewash"
+    tags = ["补洗统计分析"]
+    dependencies = {"current_user": Provide(get_current_user)}
+
+    @get("/overview", summary="补洗概览统计")
+    async def rewash_overview(self, current_user: dict) -> dict:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        return get_rewash_overview_stats()
+
+    @get("/by-customer", summary="按客户维度补洗统计")
+    async def rewash_by_customer(self, current_user: dict) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        return get_rewash_stats_by_customer()
+
+    @get("/by-category", summary="按布草类别维度补洗统计")
+    async def rewash_by_category(self, current_user: dict) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        return get_rewash_stats_by_category()
+
+    @get("/by-washing-line", summary="按清洗线维度补洗统计")
+    async def rewash_by_washing_line(self, current_user: dict) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        return get_rewash_stats_by_washing_line()
+
+    @get("/by-work-team", summary="按班组维度补洗统计")
+    async def rewash_by_work_team(self, current_user: dict) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        return get_rewash_stats_by_work_team()
+
+    @get("/abnormal-ranking", summary="异常补洗排行")
+    async def rewash_abnormal_ranking(self, current_user: dict, top_n: Optional[int] = 10) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        return get_abnormal_rewash_ranking(top_n)
 
 
 class AnomalyController(Controller):
@@ -87,4 +129,4 @@ class AnomalyController(Controller):
         return detect_missing_delivery_conclusion()
 
 
-stats_router_controllers = [StatsController, AnomalyController]
+stats_router_controllers = [StatsController, RewashStatsController, AnomalyController]

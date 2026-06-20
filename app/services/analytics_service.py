@@ -4,11 +4,12 @@ from collections import defaultdict
 
 from app.database import (
     cloth_records_table, qc_records_table, rewash_records_table,
-    cloth_categories_table, washing_lines_table, work_teams_table
+    cloth_categories_table, washing_lines_table, work_teams_table,
+    customers_table, rewash_tasks_table, rewash_recheck_records_table
 )
-from app.schemas import ClothStatus, DamageLevel, DeliverySuggestion
+from app.schemas import ClothStatus, DamageLevel, DeliverySuggestion, RewashTaskStatus, RewashFinalConclusion
 from app.config import settings
-from app.services.laundry_service import list_cloth_records
+from app.services.laundry_service import list_cloth_records, list_rewash_tasks
 
 
 def now() -> datetime:
@@ -317,4 +318,275 @@ def get_statistics_summary() -> dict:
         "damage_high_risk_categories": get_damage_high_risk_categories(),
         "rewash_todo_list": get_rewash_todo_list(),
         "washing_line_pass_rates": get_washing_line_pass_rates()
+    }
+
+
+def get_rewash_stats_by_customer() -> List[dict]:
+    """按客户维度统计补洗情况"""
+    all_tasks = list_rewash_tasks()
+    customers = {c.doc_id: c["name"] for c in customers_table.all()}
+    records_map = {r.doc_id: dict(r) for r in cloth_records_table.all()}
+
+    customer_stats = defaultdict(lambda: {
+        "customer_id": 0,
+        "customer_name": "",
+        "total_rewash_count": 0,
+        "passed_count": 0,
+        "failed_count": 0,
+        "pending_count": 0,
+        "in_progress_count": 0,
+        "completed_pending_recheck_count": 0,
+        "total_quantity": 0
+    })
+
+    for task in all_tasks:
+        record = records_map.get(task["cloth_record_id"])
+        if not record:
+            continue
+        customer_id = record["customer_id"]
+        customer_stats[customer_id]["customer_id"] = customer_id
+        customer_stats[customer_id]["customer_name"] = customers.get(customer_id, "未知")
+        customer_stats[customer_id]["total_rewash_count"] += 1
+        customer_stats[customer_id]["total_quantity"] += record["quantity"]
+
+        if task["status"] == RewashTaskStatus.PASSED:
+            customer_stats[customer_id]["passed_count"] += 1
+        elif task["status"] == RewashTaskStatus.FAILED:
+            customer_stats[customer_id]["failed_count"] += 1
+        elif task["status"] == RewashTaskStatus.PENDING:
+            customer_stats[customer_id]["pending_count"] += 1
+        elif task["status"] == RewashTaskStatus.IN_PROGRESS:
+            customer_stats[customer_id]["in_progress_count"] += 1
+        elif task["status"] == RewashTaskStatus.COMPLETED:
+            customer_stats[customer_id]["completed_pending_recheck_count"] += 1
+
+    result = []
+    for customer_id, stats in customer_stats.items():
+        total_completed = stats["passed_count"] + stats["failed_count"]
+        pass_rate = round(stats["passed_count"] / total_completed * 100, 2) if total_completed > 0 else 0
+        stats["pass_rate"] = pass_rate
+        stats["unfinished_count"] = stats["pending_count"] + stats["in_progress_count"] + stats["completed_pending_recheck_count"]
+        result.append(stats)
+
+    result.sort(key=lambda x: x["total_rewash_count"], reverse=True)
+    return result
+
+
+def get_rewash_stats_by_category() -> List[dict]:
+    """按布草类别维度统计补洗情况"""
+    all_tasks = list_rewash_tasks()
+    categories = {c.doc_id: c["name"] for c in cloth_categories_table.all()}
+    records_map = {r.doc_id: dict(r) for r in cloth_records_table.all()}
+
+    category_stats = defaultdict(lambda: {
+        "category_id": 0,
+        "category_name": "",
+        "total_rewash_count": 0,
+        "passed_count": 0,
+        "failed_count": 0,
+        "pending_count": 0,
+        "in_progress_count": 0,
+        "completed_pending_recheck_count": 0,
+        "total_quantity": 0
+    })
+
+    for task in all_tasks:
+        record = records_map.get(task["cloth_record_id"])
+        if not record:
+            continue
+        category_id = record["category_id"]
+        category_stats[category_id]["category_id"] = category_id
+        category_stats[category_id]["category_name"] = categories.get(category_id, "未知")
+        category_stats[category_id]["total_rewash_count"] += 1
+        category_stats[category_id]["total_quantity"] += record["quantity"]
+
+        if task["status"] == RewashTaskStatus.PASSED:
+            category_stats[category_id]["passed_count"] += 1
+        elif task["status"] == RewashTaskStatus.FAILED:
+            category_stats[category_id]["failed_count"] += 1
+        elif task["status"] == RewashTaskStatus.PENDING:
+            category_stats[category_id]["pending_count"] += 1
+        elif task["status"] == RewashTaskStatus.IN_PROGRESS:
+            category_stats[category_id]["in_progress_count"] += 1
+        elif task["status"] == RewashTaskStatus.COMPLETED:
+            category_stats[category_id]["completed_pending_recheck_count"] += 1
+
+    result = []
+    for category_id, stats in category_stats.items():
+        total_completed = stats["passed_count"] + stats["failed_count"]
+        pass_rate = round(stats["passed_count"] / total_completed * 100, 2) if total_completed > 0 else 0
+        stats["pass_rate"] = pass_rate
+        stats["unfinished_count"] = stats["pending_count"] + stats["in_progress_count"] + stats["completed_pending_recheck_count"]
+        result.append(stats)
+
+    result.sort(key=lambda x: x["total_rewash_count"], reverse=True)
+    return result
+
+
+def get_rewash_stats_by_washing_line() -> List[dict]:
+    """按清洗线维度统计补洗情况"""
+    all_tasks = list_rewash_tasks()
+    lines = {l.doc_id: l["name"] for l in washing_lines_table.all()}
+    records_map = {r.doc_id: dict(r) for r in cloth_records_table.all()}
+
+    line_stats = defaultdict(lambda: {
+        "washing_line_id": 0,
+        "washing_line_name": "",
+        "total_rewash_count": 0,
+        "passed_count": 0,
+        "failed_count": 0,
+        "pending_count": 0,
+        "in_progress_count": 0,
+        "completed_pending_recheck_count": 0,
+        "total_quantity": 0
+    })
+
+    for task in all_tasks:
+        line_id = task["responsible_washing_line_id"]
+        record = records_map.get(task["cloth_record_id"])
+        line_stats[line_id]["washing_line_id"] = line_id
+        line_stats[line_id]["washing_line_name"] = lines.get(line_id, "未知")
+        line_stats[line_id]["total_rewash_count"] += 1
+        if record:
+            line_stats[line_id]["total_quantity"] += record["quantity"]
+
+        if task["status"] == RewashTaskStatus.PASSED:
+            line_stats[line_id]["passed_count"] += 1
+        elif task["status"] == RewashTaskStatus.FAILED:
+            line_stats[line_id]["failed_count"] += 1
+        elif task["status"] == RewashTaskStatus.PENDING:
+            line_stats[line_id]["pending_count"] += 1
+        elif task["status"] == RewashTaskStatus.IN_PROGRESS:
+            line_stats[line_id]["in_progress_count"] += 1
+        elif task["status"] == RewashTaskStatus.COMPLETED:
+            line_stats[line_id]["completed_pending_recheck_count"] += 1
+
+    result = []
+    for line_id, stats in line_stats.items():
+        total_completed = stats["passed_count"] + stats["failed_count"]
+        pass_rate = round(stats["passed_count"] / total_completed * 100, 2) if total_completed > 0 else 0
+        stats["pass_rate"] = pass_rate
+        stats["unfinished_count"] = stats["pending_count"] + stats["in_progress_count"] + stats["completed_pending_recheck_count"]
+        result.append(stats)
+
+    result.sort(key=lambda x: x["total_rewash_count"], reverse=True)
+    return result
+
+
+def get_rewash_stats_by_work_team() -> List[dict]:
+    """按班组维度统计补洗情况"""
+    all_tasks = list_rewash_tasks()
+    teams = {t.doc_id: t["name"] for t in work_teams_table.all()}
+    records_map = {r.doc_id: dict(r) for r in cloth_records_table.all()}
+
+    team_stats = defaultdict(lambda: {
+        "work_team_id": 0,
+        "work_team_name": "",
+        "total_rewash_count": 0,
+        "passed_count": 0,
+        "failed_count": 0,
+        "pending_count": 0,
+        "in_progress_count": 0,
+        "completed_pending_recheck_count": 0,
+        "total_quantity": 0
+    })
+
+    for task in all_tasks:
+        team_id = task["responsible_work_team_id"]
+        record = records_map.get(task["cloth_record_id"])
+        team_stats[team_id]["work_team_id"] = team_id
+        team_stats[team_id]["work_team_name"] = teams.get(team_id, "未知")
+        team_stats[team_id]["total_rewash_count"] += 1
+        if record:
+            team_stats[team_id]["total_quantity"] += record["quantity"]
+
+        if task["status"] == RewashTaskStatus.PASSED:
+            team_stats[team_id]["passed_count"] += 1
+        elif task["status"] == RewashTaskStatus.FAILED:
+            team_stats[team_id]["failed_count"] += 1
+        elif task["status"] == RewashTaskStatus.PENDING:
+            team_stats[team_id]["pending_count"] += 1
+        elif task["status"] == RewashTaskStatus.IN_PROGRESS:
+            team_stats[team_id]["in_progress_count"] += 1
+        elif task["status"] == RewashTaskStatus.COMPLETED:
+            team_stats[team_id]["completed_pending_recheck_count"] += 1
+
+    result = []
+    for team_id, stats in team_stats.items():
+        total_completed = stats["passed_count"] + stats["failed_count"]
+        pass_rate = round(stats["passed_count"] / total_completed * 100, 2) if total_completed > 0 else 0
+        stats["pass_rate"] = pass_rate
+        stats["unfinished_count"] = stats["pending_count"] + stats["in_progress_count"] + stats["completed_pending_recheck_count"]
+        result.append(stats)
+
+    result.sort(key=lambda x: x["total_rewash_count"], reverse=True)
+    return result
+
+
+def get_abnormal_rewash_ranking(top_n: int = 10) -> List[dict]:
+    """异常补洗排行（补洗次数超过阈值的记录）"""
+    all_tasks = list_rewash_tasks()
+    records_map = {r.doc_id: dict(r) for r in cloth_records_table.all()}
+    customers = {c.doc_id: c["name"] for c in customers_table.all()}
+    categories = {c.doc_id: c["name"] for c in cloth_categories_table.all()}
+
+    record_rewash_counts = defaultdict(int)
+    record_failed_counts = defaultdict(int)
+    for task in all_tasks:
+        record_rewash_counts[task["cloth_record_id"]] += 1
+        if task["status"] == RewashTaskStatus.FAILED:
+            record_failed_counts[task["cloth_record_id"]] += 1
+
+    ranking = []
+    for record_id, total_count in record_rewash_counts.items():
+        if total_count >= 2:
+            record = records_map.get(record_id)
+            if not record:
+                continue
+            ranking.append({
+                "record_id": record_id,
+                "batch_no": record["batch_no"],
+                "customer_id": record["customer_id"],
+                "customer_name": customers.get(record["customer_id"], "未知"),
+                "category_id": record["category_id"],
+                "category_name": categories.get(record["category_id"], "未知"),
+                "quantity": record["quantity"],
+                "total_rewash_count": total_count,
+                "failed_count": record_failed_counts[record_id],
+                "status": record["status"]
+            })
+
+    ranking.sort(key=lambda x: (x["total_rewash_count"], x["failed_count"]), reverse=True)
+    return ranking[:top_n]
+
+
+def get_rewash_overview_stats() -> dict:
+    """补洗概览统计"""
+    all_tasks = list_rewash_tasks()
+
+    status_counts = defaultdict(int)
+    for task in all_tasks:
+        status_counts[task["status"]] += 1
+
+    total_tasks = len(all_tasks)
+    passed_count = status_counts.get(RewashTaskStatus.PASSED, 0)
+    failed_count = status_counts.get(RewashTaskStatus.FAILED, 0)
+    total_completed = passed_count + failed_count
+    pass_rate = round(passed_count / total_completed * 100, 2) if total_completed > 0 else 0
+
+    pending_count = status_counts.get(RewashTaskStatus.PENDING, 0)
+    in_progress_count = status_counts.get(RewashTaskStatus.IN_PROGRESS, 0)
+    completed_pending_recheck = status_counts.get(RewashTaskStatus.COMPLETED, 0)
+    unfinished_count = pending_count + in_progress_count + completed_pending_recheck
+
+    return {
+        "total_rewash_tasks": total_tasks,
+        "passed_count": passed_count,
+        "failed_count": failed_count,
+        "pending_count": pending_count,
+        "in_progress_count": in_progress_count,
+        "completed_pending_recheck_count": completed_pending_recheck,
+        "unfinished_count": unfinished_count,
+        "pass_rate": pass_rate,
+        "status_counts": dict(status_counts)
     }
