@@ -5,7 +5,8 @@ from collections import defaultdict
 from app.database import (
     cloth_records_table, qc_records_table, rewash_records_table,
     cloth_categories_table, washing_lines_table, work_teams_table,
-    customers_table, rewash_tasks_table, rewash_recheck_records_table
+    customers_table, rewash_tasks_table, rewash_recheck_records_table,
+    delivery_records_table
 )
 from app.schemas import ClothStatus, DamageLevel, DeliverySuggestion, RewashTaskStatus, RewashFinalConclusion
 from app.config import settings
@@ -269,7 +270,7 @@ def get_washing_line_pass_rates() -> List[dict]:
         line_stats[line_id]["total_batches"] += 1
         line_stats[line_id]["line_name"] = lines.get(line_id, "未知")
 
-        if record["status"] in [ClothStatus.READY_FOR_DELIVERY.value, "已出厂"]:
+        if record["status"] in [ClothStatus.READY_FOR_DELIVERY.value, ClothStatus.DELIVERED.value]:
             qc_list = qc_records_table.search(lambda q: q["cloth_record_id"] == record["id"])
             if any(qc["delivery_suggestion"] == DeliverySuggestion.APPROVE for qc in qc_list):
                 line_stats[line_id]["passed_batches"] += 1
@@ -311,10 +312,34 @@ def get_statistics_summary() -> dict:
 
     total_quantity = sum(r["quantity"] for r in all_records)
 
+    pending_handover_count = 0
+    pending_handover_quantity = 0
+    completed_handover_count = 0
+    completed_handover_quantity = 0
+    for record in all_records:
+        if record["status"] == ClothStatus.READY_FOR_DELIVERY.value:
+            pending_handover_count += 1
+            pending_handover_quantity += record["quantity"]
+        elif record["status"] == ClothStatus.DELIVERED.value:
+            completed_handover_count += 1
+            completed_handover_quantity += record["quantity"]
+
+    delivery_total = pending_handover_count + completed_handover_count
+    handover_completion_rate = round(
+        completed_handover_count / delivery_total * 100, 2
+    ) if delivery_total > 0 else 0
+
     return {
         "total_records": len(all_records),
         "total_quantity": total_quantity,
         "status_counts": dict(status_counts),
+        "delivery": {
+            "pending_handover_count": pending_handover_count,
+            "pending_handover_quantity": pending_handover_quantity,
+            "completed_handover_count": completed_handover_count,
+            "completed_handover_quantity": completed_handover_quantity,
+            "handover_completion_rate": handover_completion_rate
+        },
         "damage_high_risk_categories": get_damage_high_risk_categories(),
         "rewash_todo_list": get_rewash_todo_list(),
         "washing_line_pass_rates": get_washing_line_pass_rates()
@@ -590,3 +615,91 @@ def get_rewash_overview_stats() -> dict:
         "pass_rate": pass_rate,
         "status_counts": dict(status_counts)
     }
+
+
+def get_delivery_overview_stats() -> dict:
+    """出厂交接概览统计，区分可出厂待交接与已完成交接"""
+    all_records = list_cloth_records()
+
+    pending_handover_count = 0
+    pending_handover_quantity = 0
+    completed_handover_count = 0
+    completed_handover_quantity = 0
+    delivered_quantity = 0
+
+    for record in all_records:
+        if record["status"] == ClothStatus.READY_FOR_DELIVERY.value:
+            pending_handover_count += 1
+            pending_handover_quantity += record["quantity"]
+        elif record["status"] == ClothStatus.DELIVERED.value:
+            completed_handover_count += 1
+            completed_handover_quantity += record["quantity"]
+
+    delivered_records = delivery_records_table.all()
+    for d in delivered_records:
+        delivered_quantity += d["delivery_quantity"]
+
+    delivery_total = pending_handover_count + completed_handover_count
+    handover_completion_rate = round(
+        completed_handover_count / delivery_total * 100, 2
+    ) if delivery_total > 0 else 0
+
+    return {
+        "pending_handover_count": pending_handover_count,
+        "pending_handover_quantity": pending_handover_quantity,
+        "completed_handover_count": completed_handover_count,
+        "completed_handover_quantity": completed_handover_quantity,
+        "delivered_quantity": delivered_quantity,
+        "handover_completion_rate": handover_completion_rate,
+        "total_delivery_records": len(delivered_records)
+    }
+
+
+def get_delivery_stats_by_customer() -> List[dict]:
+    """按客户维度统计出厂交接情况，区分可出厂待交接与已完成交接"""
+    all_records = list_cloth_records()
+    customers = {c.doc_id: c["name"] for c in customers_table.all()}
+    delivery_records = delivery_records_table.all()
+    delivered_quantity_by_record = defaultdict(int)
+    for d in delivery_records:
+        delivered_quantity_by_record[d["cloth_record_id"]] += d["delivery_quantity"]
+
+    customer_stats = defaultdict(lambda: {
+        "customer_id": 0,
+        "customer_name": "",
+        "ready_count": 0,
+        "delivered_count": 0,
+        "pending_handover_count": 0,
+        "completed_handover_count": 0,
+        "pending_handover_quantity": 0,
+        "completed_handover_quantity": 0,
+        "delivered_quantity": 0,
+        "total_quantity": 0
+    })
+
+    for record in all_records:
+        customer_id = record["customer_id"]
+        customer_stats[customer_id]["customer_id"] = customer_id
+        customer_stats[customer_id]["customer_name"] = customers.get(customer_id, "未知")
+        customer_stats[customer_id]["total_quantity"] += record["quantity"]
+
+        if record["status"] == ClothStatus.READY_FOR_DELIVERY.value:
+            customer_stats[customer_id]["ready_count"] += 1
+            customer_stats[customer_id]["pending_handover_count"] += 1
+            customer_stats[customer_id]["pending_handover_quantity"] += record["quantity"]
+        elif record["status"] == ClothStatus.DELIVERED.value:
+            customer_stats[customer_id]["delivered_count"] += 1
+            customer_stats[customer_id]["completed_handover_count"] += 1
+            customer_stats[customer_id]["completed_handover_quantity"] += record["quantity"]
+            customer_stats[customer_id]["delivered_quantity"] += delivered_quantity_by_record.get(record["id"], record["quantity"])
+
+    result = []
+    for customer_id, stats in customer_stats.items():
+        delivery_total = stats["pending_handover_count"] + stats["completed_handover_count"]
+        stats["handover_completion_rate"] = round(
+            stats["completed_handover_count"] / delivery_total * 100, 2
+        ) if delivery_total > 0 else 0
+        result.append(stats)
+
+    result.sort(key=lambda x: (x["pending_handover_count"] + x["completed_handover_count"]), reverse=True)
+    return result

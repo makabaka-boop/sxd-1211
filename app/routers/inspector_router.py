@@ -7,7 +7,8 @@ from typing import List, Optional
 from app.auth import get_current_user
 from app.schemas import (
     UserRole, QcRecordCreate, QcRecord, ClothStatus,
-    RewashTaskCreate, RewashTaskRecheck, RewashTaskStatus
+    RewashTaskCreate, RewashTaskRecheck, RewashTaskStatus,
+    DeliveryHandoverCreate, DeliveryStage
 )
 from app.services.laundry_service import (
     create_qc_record, confirm_delivery, get_cloth_record, list_cloth_records,
@@ -35,11 +36,25 @@ class InspectorController(Controller):
         qc = create_qc_record(record_id, data, current_user["id"])
         return qc
 
-    @post("/cloth-records/{record_id:int}/delivery", summary="出厂确认")
-    async def confirm_deliver(self, current_user: dict, record_id: int) -> dict:
+    @post("/cloth-records/{record_id:int}/delivery", summary="出厂交接确认")
+    async def confirm_deliver(self, current_user: dict, record_id: int, data: DeliveryHandoverCreate) -> dict:
         check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
-        record = confirm_delivery(record_id, current_user["id"])
+        record = confirm_delivery(record_id, data, current_user["id"])
         return record
+
+    @get("/cloth-records/ready-for-delivery", summary="获取可出厂待交接列表")
+    async def list_ready_for_delivery(self, current_user: dict) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        records = list_cloth_records({"delivery_stage": DeliveryStage.PENDING_HANDOVER.value})
+        records.sort(key=lambda x: x.get("qc_at") or x["created_at"])
+        return records
+
+    @get("/cloth-records/delivered", summary="获取已完成交接列表")
+    async def list_delivered(self, current_user: dict) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        records = list_cloth_records({"delivery_stage": DeliveryStage.COMPLETED_HANDOVER.value})
+        records.sort(key=lambda x: x.get("delivered_at") or x["updated_at"], reverse=True)
+        return records
 
     @get("/cloth-records/{record_id:int}/qc", summary="获取布草的质检记录")
     async def get_qc_records(self, current_user: dict, record_id: int) -> List[dict]:

@@ -7,19 +7,29 @@ from app.database import (
     rewash_records_table, qc_records_table,
     customers_table, cloth_categories_table, washing_lines_table, work_teams_table,
     rewash_tasks_table, rewash_recheck_records_table, RewashTaskQuery, RewashRecheckQuery,
-    RewashRecordQuery, users_table
+    RewashRecordQuery, users_table,
+    delivery_records_table, DeliveryRecordQuery
 )
 from app.schemas import (
     ClothStatus, ClothRecordCreate, SortingRecordCreate, QcRecordCreate,
     RewashRecordCreate, CleanlinessLevel, DeliverySuggestion, DamageLevel,
     RewashTaskStatus, RewashFinalConclusion,
-    RewashTaskCreate, RewashTaskComplete, RewashTaskRecheck
+    RewashTaskCreate, RewashTaskComplete, RewashTaskRecheck,
+    DeliveryHandoverCreate, DeliveryStage
 )
 from app.config import settings
 
 
 def now_str() -> str:
     return datetime.now().isoformat()
+
+
+def _delivery_stage(status) -> Optional[str]:
+    if status == ClothStatus.READY_FOR_DELIVERY:
+        return DeliveryStage.PENDING_HANDOVER.value
+    if status == ClothStatus.DELIVERED:
+        return DeliveryStage.COMPLETED_HANDOVER.value
+    return None
 
 
 def get_cloth_record_or_404(record_id: int) -> dict:
@@ -68,7 +78,8 @@ def create_cloth_record(data: ClothRecordCreate, sorter_id: int) -> dict:
         "updated_at": now_str(),
         "sorted_at": None,
         "washing_completed_at": None,
-        "qc_at": None
+        "qc_at": None,
+        "delivered_at": None
     }
 
     record_id = cloth_records_table.insert(record)
@@ -225,21 +236,52 @@ def create_qc_record(record_id: int, data: QcRecordCreate, inspector_id: int) ->
     return result
 
 
-def confirm_delivery(record_id: int, user_id: int) -> dict:
+def confirm_delivery(record_id: int, data: DeliveryHandoverCreate, user_id: int) -> dict:
     record = get_cloth_record_or_404(record_id)
 
     if record["status"] != ClothStatus.READY_FOR_DELIVERY:
         raise ValidationException(
-            detail=f"当前状态「{record['status']}」不可出厂确认，仅「可出厂」可确认出厂"
+            detail=f"当前状态「{record['status']}」不可出厂交接，仅「可出厂」可登记出厂交接"
         )
 
+    if not data.handover_person or not data.handover_person.strip():
+        raise ValidationException(detail="交接人不能为空")
+    if not data.customer_signee or not data.customer_signee.strip():
+        raise ValidationException(detail="客户签收人不能为空")
+
+    delivery_quantity = data.delivery_quantity if data.delivery_quantity is not None else record["quantity"]
+    if delivery_quantity <= 0:
+        raise ValidationException(detail="出厂数量必须大于0")
+    if delivery_quantity > record["quantity"]:
+        raise ValidationException(
+            detail=f"出厂数量不可超过布草记录数量({record['quantity']})"
+        )
+
+    delivery_time = data.delivery_time or now_str()
+
+    delivery_data = {
+        "cloth_record_id": record_id,
+        "operator_id": user_id,
+        "handover_person": data.handover_person.strip(),
+        "customer_signee": data.customer_signee.strip(),
+        "delivery_quantity": delivery_quantity,
+        "handover_remark": data.handover_remark,
+        "delivery_time": delivery_time,
+        "created_at": now_str()
+    }
+    delivery_id = delivery_records_table.insert(delivery_data)
+    delivery_data["id"] = delivery_id
+
     updates = {
-        "status": "已出厂",
+        "status": ClothStatus.DELIVERED,
+        "delivered_at": delivery_time,
         "updated_at": now_str()
     }
     cloth_records_table.update(updates, doc_ids=[record_id])
 
     updated = get_cloth_record_or_404(record_id)
+    updated["delivery_record"] = delivery_data
+    updated["delivery_stage"] = _delivery_stage(updated["status"])
     return updated
 
 
@@ -264,6 +306,15 @@ def list_cloth_records(filters: Optional[dict] = None) -> List[dict]:
             records = [r for r in records if r.get("work_team_id") == filters["work_team_id"]]
         if filters.get("status"):
             records = [r for r in records if r["status"] == filters["status"]]
+        if filters.get("delivery_stage"):
+            stage = filters["delivery_stage"]
+            stage_status = None
+            if stage == DeliveryStage.PENDING_HANDOVER.value:
+                stage_status = ClothStatus.READY_FOR_DELIVERY
+            elif stage == DeliveryStage.COMPLETED_HANDOVER.value:
+                stage_status = ClothStatus.DELIVERED
+            if stage_status:
+                records = [r for r in records if r["status"] == stage_status]
         if filters.get("stain_level"):
             records = [r for r in records if r["stain_level"] == filters["stain_level"]]
         if filters.get("date_from"):
@@ -275,6 +326,7 @@ def list_cloth_records(filters: Optional[dict] = None) -> List[dict]:
     for r in records:
         item = dict(r)
         item["id"] = r.doc_id
+        item["delivery_stage"] = _delivery_stage(r["status"])
         result.append(item)
 
     result.sort(key=lambda x: x["created_at"], reverse=True)
@@ -567,6 +619,16 @@ def get_cloth_record_detail(record_id: int) -> dict:
         item["rechecker_name"] = rechecker["full_name"] if rechecker else None
         recheck_history_list.append(item)
 
+    delivery_records = delivery_records_table.search(DeliveryRecordQuery.cloth_record_id == record_id)
+    delivery_records_list = []
+    for d in delivery_records:
+        item = dict(d)
+        item["id"] = d.doc_id
+        operator = users_table.get(doc_id=d["operator_id"])
+        item["operator_name"] = operator["full_name"] if operator else None
+        delivery_records_list.append(item)
+    delivery_records_list.sort(key=lambda x: x["delivery_time"], reverse=True)
+
     active_tasks = [t for t in rewash_tasks_list if t["status"] in [
         RewashTaskStatus.PENDING, RewashTaskStatus.IN_PROGRESS, RewashTaskStatus.COMPLETED
     ]]
@@ -578,6 +640,8 @@ def get_cloth_record_detail(record_id: int) -> dict:
     detail["recheck_history"] = recheck_history_list
     detail["current_rewash_status"] = current_rewash_status
     detail["total_rewash_count"] = len(rewash_tasks_list)
+    detail["delivery_records"] = delivery_records_list
+    detail["delivery_stage"] = _delivery_stage(record["status"])
 
     return detail
 

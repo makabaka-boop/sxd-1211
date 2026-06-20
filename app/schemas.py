@@ -17,6 +17,12 @@ class ClothStatus(str, Enum):
     REWASHING = "补洗中"
     READY_FOR_DELIVERY = "可出厂"
     HOLD_DELIVERY = "暂停出厂"
+    DELIVERED = "已出厂"
+
+
+class DeliveryStage(str, Enum):
+    PENDING_HANDOVER = "可出厂待交接"
+    COMPLETED_HANDOVER = "已完成交接"
 
 
 class RewashTaskStatus(str, Enum):
@@ -214,6 +220,7 @@ class ClothRecord(BaseModel):
     sorted_at: Optional[str] = None
     washing_completed_at: Optional[str] = None
     qc_at: Optional[str] = None
+    delivered_at: Optional[str] = None
 
 
 class SortingRecordCreate(BaseModel):
@@ -263,12 +270,33 @@ class RewashRecord(BaseModel):
     created_at: str
 
 
+class DeliveryHandoverCreate(BaseModel):
+    handover_person: str = Field(..., description="交接人")
+    customer_signee: str = Field(..., description="客户签收人")
+    delivery_quantity: Optional[int] = Field(None, description="出厂数量，默认为布草记录数量")
+    handover_remark: Optional[str] = None
+    delivery_time: Optional[str] = Field(None, description="出厂时间，默认为当前时间")
+
+
+class DeliveryHandoverRecord(BaseModel):
+    id: int
+    cloth_record_id: int
+    operator_id: int
+    handover_person: str
+    customer_signee: str
+    delivery_quantity: int
+    handover_remark: Optional[str] = None
+    delivery_time: str
+    created_at: str
+
+
 class ClothRecordFilter(BaseModel):
     customer_id: Optional[int] = None
     category_id: Optional[int] = None
     washing_line_id: Optional[int] = None
     work_team_id: Optional[int] = None
     status: Optional[ClothStatus] = None
+    delivery_stage: Optional[DeliveryStage] = None
     stain_level: Optional[StainLevel] = None
     date_from: Optional[str] = None
     date_to: Optional[str] = None
@@ -332,3 +360,5 @@ class ClothRecordDetail(ClothRecord):
     recheck_history: List[dict] = []
     current_rewash_status: Optional[str] = None
     total_rewash_count: int = 0
+    delivery_records: List[dict] = []
+    delivery_stage: Optional[str] = None

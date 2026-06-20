@@ -22,7 +22,9 @@ from app.services.analytics_service import (
     get_rewash_stats_by_washing_line,
     get_rewash_stats_by_work_team,
     get_abnormal_rewash_ranking,
-    get_rewash_overview_stats
+    get_rewash_overview_stats,
+    get_delivery_overview_stats,
+    get_delivery_stats_by_customer
 )
 
 
@@ -129,4 +131,20 @@ class AnomalyController(Controller):
         return detect_missing_delivery_conclusion()
 
 
-stats_router_controllers = [StatsController, RewashStatsController, AnomalyController]
+class DeliveryStatsController(Controller):
+    path = "/stats/delivery"
+    tags = ["出厂交接统计"]
+    dependencies = {"current_user": Provide(get_current_user)}
+
+    @get("/overview", summary="出厂交接概览统计")
+    async def delivery_overview(self, current_user: dict) -> dict:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        return get_delivery_overview_stats()
+
+    @get("/by-customer", summary="按客户维度出厂交接统计")
+    async def delivery_by_customer(self, current_user: dict) -> List[dict]:
+        check_role(current_user, [UserRole.ADMIN, UserRole.INSPECTOR])
+        return get_delivery_stats_by_customer()
+
+
+stats_router_controllers = [StatsController, RewashStatsController, AnomalyController, DeliveryStatsController]

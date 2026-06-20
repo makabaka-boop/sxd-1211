@@ -8,7 +8,7 @@ from app.auth import get_current_user
 from app.schemas import (
     UserRole, ClothRecord, ClothRecordCreate, ClothRecordFilter,
     SortingRecordCreate, RewashRecordCreate, ClothStatus,
-    RewashTaskComplete, RewashTaskStatus
+    RewashTaskComplete, RewashTaskStatus, DeliveryStage
 )
 from app.services.laundry_service import (
     create_cloth_record, sort_cloth_record, request_rewash, complete_washing,
@@ -43,6 +43,7 @@ class SorterController(Controller):
         washing_line_id: Optional[int] = None,
         work_team_id: Optional[int] = None,
         status: Optional[ClothStatus] = None,
+        delivery_stage: Optional[DeliveryStage] = None,
         stain_level: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None
@@ -54,6 +55,7 @@ class SorterController(Controller):
             "washing_line_id": washing_line_id,
             "work_team_id": work_team_id,
             "status": status.value if status else None,
+            "delivery_stage": delivery_stage.value if delivery_stage else None,
             "stain_level": stain_level,
             "date_from": date_from,
             "date_to": date_to
