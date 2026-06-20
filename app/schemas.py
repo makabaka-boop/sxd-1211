@@ -25,6 +25,7 @@ class RewashTaskStatus(str, Enum):
     COMPLETED = "补洗完成待复检"
     PASSED = "复检通过"
     FAILED = "复检未通过"
+    HOLD = "暂停出厂"
     CANCELLED = "已取消"
 
 
@@ -229,6 +230,12 @@ class QcRecordCreate(BaseModel):
     rewash_conclusion: Optional[bool] = False
     delivery_suggestion: DeliverySuggestion
     qc_remark: Optional[str] = None
+    rewash_reason: Optional[str] = None
+    rewash_severity: Optional[RewashSeverity] = None
+    rewash_expected_completion_time: Optional[str] = None
+    rewash_responsible_washing_line_id: Optional[int] = None
+    rewash_responsible_work_team_id: Optional[int] = None
+    rewash_remark: Optional[str] = None
 
 
 class QcRecord(BaseModel):
@@ -285,6 +292,12 @@ class RewashTaskRecheck(BaseModel):
     damage_recheck: DamageLevel
     final_conclusion: RewashFinalConclusion
     recheck_remark: Optional[str] = None
+    next_rewash_reason: Optional[str] = None
+    next_rewash_severity: Optional[RewashSeverity] = None
+    next_rewash_expected_completion_time: Optional[str] = None
+    next_rewash_responsible_washing_line_id: Optional[int] = None
+    next_rewash_responsible_work_team_id: Optional[int] = None
+    next_rewash_remark: Optional[str] = None
 
 
 class RewashTask(BaseModel):

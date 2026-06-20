@@ -198,7 +198,31 @@ def create_qc_record(record_id: int, data: QcRecordCreate, inspector_id: int) ->
     }
     cloth_records_table.update(updates, doc_ids=[record_id])
 
-    return qc_data
+    rewash_task = None
+    if data.delivery_suggestion == DeliverySuggestion.REWASH:
+        has_rewash_info = (
+            data.rewash_reason and
+            data.rewash_severity and
+            data.rewash_expected_completion_time and
+            data.rewash_responsible_washing_line_id and
+            data.rewash_responsible_work_team_id
+        )
+        if has_rewash_info:
+            rewash_task_data = RewashTaskCreate(
+                reason=data.rewash_reason,
+                severity=data.rewash_severity,
+                expected_completion_time=data.rewash_expected_completion_time,
+                responsible_washing_line_id=data.rewash_responsible_washing_line_id,
+                responsible_work_team_id=data.rewash_responsible_work_team_id,
+                remark=data.rewash_remark
+            )
+            rewash_task = _create_rewash_task_internal(record_id, rewash_task_data, inspector_id)
+
+    result = {
+        "qc_record": qc_data,
+        "rewash_task": rewash_task
+    }
+    return result
 
 
 def confirm_delivery(record_id: int, user_id: int) -> dict:
@@ -265,14 +289,7 @@ def get_rewash_task_or_404(task_id: int) -> dict:
     return task
 
 
-def create_rewash_task(record_id: int, data: RewashTaskCreate, creator_id: int) -> dict:
-    record = get_cloth_record_or_404(record_id)
-
-    if record["status"] not in [ClothStatus.PENDING_QC, ClothStatus.WASHING, ClothStatus.READY_FOR_DELIVERY, ClothStatus.REWASHING]:
-        raise ValidationException(
-            detail=f"当前状态「{record['status']}」不可创建补洗任务"
-        )
-
+def _create_rewash_task_internal(record_id: int, data: RewashTaskCreate, creator_id: int) -> dict:
     washing_line = washing_lines_table.get(doc_id=data.responsible_washing_line_id)
     if not washing_line:
         raise NotFoundException(detail="责任清洗线不存在")
@@ -321,11 +338,35 @@ def create_rewash_task(record_id: int, data: RewashTaskCreate, creator_id: int) 
     })
 
     cloth_records_table.update({
-        "status": ClothStatus.REWASHING,
         "updated_at": now_str()
     }, doc_ids=[record_id])
 
     return task_data
+
+
+def create_rewash_task(record_id: int, data: RewashTaskCreate, creator_id: int) -> dict:
+    record = get_cloth_record_or_404(record_id)
+
+    if record["status"] != ClothStatus.REWASHING:
+        raise ValidationException(
+            detail=f"当前状态「{record['status']}」不可创建补洗任务，仅「补洗中」状态可创建补洗任务"
+        )
+
+    all_record_tasks = rewash_tasks_table.search(
+        RewashTaskQuery.cloth_record_id == record_id
+    )
+    active_statuses = [
+        RewashTaskStatus.PENDING,
+        RewashTaskStatus.IN_PROGRESS,
+        RewashTaskStatus.COMPLETED
+    ]
+    active_tasks = [t for t in all_record_tasks if t["status"] in active_statuses]
+    if active_tasks:
+        raise ValidationException(
+            detail="该布草已有进行中的补洗任务，请先完成当前补洗任务"
+        )
+
+    return _create_rewash_task_internal(record_id, data, creator_id)
 
 
 def list_rewash_tasks(filters: Optional[dict] = None) -> List[dict]:
@@ -380,9 +421,13 @@ def start_rewash_task(task_id: int, user_id: int) -> dict:
 def complete_rewash_task(task_id: int, data: RewashTaskComplete, user_id: int) -> dict:
     task = get_rewash_task_or_404(task_id)
 
-    if task["status"] not in [RewashTaskStatus.PENDING, RewashTaskStatus.IN_PROGRESS]:
+    if task["status"] == RewashTaskStatus.PENDING:
         raise ValidationException(
-            detail=f"当前补洗任务状态「{task['status']}」不可完成，仅「待补洗」或「补洗中」可完成"
+            detail="补洗任务尚未启动，请先启动补洗任务后再提交完成结果"
+        )
+    if task["status"] != RewashTaskStatus.IN_PROGRESS:
+        raise ValidationException(
+            detail=f"当前补洗任务状态「{task['status']}」不可完成，仅「补洗中」可完成"
         )
 
     updates = {
@@ -430,7 +475,7 @@ def recheck_rewash_task(task_id: int, data: RewashTaskRecheck, user_id: int) -> 
         new_task_status = RewashTaskStatus.FAILED
         new_cloth_status = ClothStatus.REWASHING
     elif data.final_conclusion == RewashFinalConclusion.HOLD:
-        new_task_status = RewashTaskStatus.PASSED
+        new_task_status = RewashTaskStatus.HOLD
         new_cloth_status = ClothStatus.HOLD_DELIVERY
     else:
         new_task_status = task["status"]
@@ -455,7 +500,33 @@ def recheck_rewash_task(task_id: int, data: RewashTaskRecheck, user_id: int) -> 
             "updated_at": now_str()
         }, doc_ids=[task["cloth_record_id"]])
 
-    return recheck_data
+    next_rewash_task = None
+    if data.final_conclusion == RewashFinalConclusion.CONTINUE_REWASH:
+        has_next_rewash_info = (
+            data.next_rewash_reason and
+            data.next_rewash_severity and
+            data.next_rewash_expected_completion_time and
+            data.next_rewash_responsible_washing_line_id and
+            data.next_rewash_responsible_work_team_id
+        )
+        if has_next_rewash_info:
+            next_rewash_data = RewashTaskCreate(
+                reason=data.next_rewash_reason,
+                severity=data.next_rewash_severity,
+                expected_completion_time=data.next_rewash_expected_completion_time,
+                responsible_washing_line_id=data.next_rewash_responsible_washing_line_id,
+                responsible_work_team_id=data.next_rewash_responsible_work_team_id,
+                remark=data.next_rewash_remark
+            )
+            next_rewash_task = _create_rewash_task_internal(
+                task["cloth_record_id"], next_rewash_data, user_id
+            )
+
+    result = {
+        "recheck_record": recheck_data,
+        "next_rewash_task": next_rewash_task
+    }
+    return result
 
 
 def get_cloth_record_detail(record_id: int) -> dict:
